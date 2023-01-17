@@ -20,21 +20,43 @@
  See here for more details: https://github.com/esp8266/Arduino/tree/master/libraries/esp8266/examples/LowPowerDemo
  */
 
+
+//------------------------------------------------------------------------------
 // Core, WiFi and connectivity related libraries
+//------------------------------------------------------------------------------
 #include <ESP8266WiFi.h>
-
-extern "C" {
-#include "user_interface.h"
-}
-
-#include <ArduinoHttpClient.h>
-#include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 
-// communication with the TFT via SPI
-#include <SPI.h>
+// secure WiFi client
+WiFiClientSecure sslclient;
 
+// WiFi secrets
+#include "arduino_secrets.h" 
+char ssid[] = SECRET_SSID;        // your network SSID (name)
+char pass[] = SECRET_PASS;        // your network password (use for WPA, or use as key for WEP)
+int status = WL_IDLE_STATUS;      // the WiFi radio's status
+
+// HTTP & JSON
+#include <ArduinoHttpClient.h>
+#include <ArduinoJson.h>
+
+// servers and clients
+char priceserver[] = "www.bitstamp.net";
+char mempoolserver[] = "mempool.space";
+char weatherserver[] = "api.openweathermap.org";
+
+HttpClient priceclient = HttpClient(sslclient, priceserver, 443);
+HttpClient mempoolclient = HttpClient(sslclient, mempoolserver, 443);
+HttpClient weatherclient = HttpClient(sslclient, weatherserver, 443);
+
+// JSON documents for data processing
+StaticJsonDocument<2048> doc;
+StaticJsonDocument<2048> weather;
+
+
+//------------------------------------------------------------------------------
 // time library for handling NTP and date/time, NTP callback
+//------------------------------------------------------------------------------
 #include <time.h>
 #include <coredecls.h>
 
@@ -42,24 +64,55 @@ extern "C" {
 #define MY_NTP_SERVER "pool.ntp.org"           
 #define MY_TZ "GMT0BST,M3.5.0/1,M10.5.0" // London
 
-// temperature and humidity sensor (SHT21 compatible) via I2C
-#include <Wire.h>
-#include <Sodaq_SHT2x.h>
+//Week Days
+String weekDaysFull[7]={"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+//String weekDays[7]={"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+
+//Month names
+String months[12]={"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+
+// time related variables and parameters
+time_t now;    // this is the epoch
+tm tm;         // the structure tm holds time information in a more convient way
+
+// callback function for NTP sync
+void timeIsSet(bool from_sntp) {  
+  if (from_sntp){
+    Serial.println();
+    Serial.println("[NTP] NTP sync complete.");
+    Serial.println();
+  }
+}
+
+
+//------------------------------------------------------------------------------
+// User interface/display 
+//------------------------------------------------------------------------------
+extern "C" {
+#include "user_interface.h"
+}
+
+// communication with the TFT via SPI
+#include <SPI.h>
 
 // TFT libraries for 1.8" or 1.77" 160x128 display with ST7735 display controller
 #include <Adafruit_GFX.h>    // Core graphics library
 #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
+
+// assign tft object
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+// define pins for the TFT display, necessary for compatibility 
+// with default I2C pins for temperature sensor
+#define TFT_CS         2 //NodeMCU pin D4
+#define TFT_RST        16                                            
+#define TFT_DC         0 //NodeMCU pin D3
 
 // include fonts
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
-
-// define pins for the TFT display, necessary for compatibility with default I2C pins for temperature sensor
-#define TFT_CS         2 //NodeMCU pin D4
-#define TFT_RST        16                                            
-#define TFT_DC         0 //NodeMCU pin D3
 
 // define colors
 #define TWHITE ST7735_WHITE
@@ -75,60 +128,10 @@ extern "C" {
 #define DARKYELLOW 0x51E0 // (RGB 80 / 60 / 0)
 
 
-// assign tft object
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
-
-// secure WiFi client
-WiFiClientSecure sslclient;
-
-// servers and clients
-char priceserver[] = "www.bitstamp.net";
-char mempoolserver[] = "mempool.space";
-char weatherserver[] = "api.openweathermap.org";
-
-HttpClient priceclient = HttpClient(sslclient, priceserver, 443);
-HttpClient mempoolclient = HttpClient(sslclient, mempoolserver, 443);
-HttpClient weatherclient = HttpClient(sslclient, weatherserver, 443);
-
-// the openweathermap API string holds the geographic coordinates and the (free) API key
-char weatherAPIString[] = "/data/2.5/weather?lat=51.5&lon=0.0&appid=MYAPIKEY";
-
-// JSON documents for data processing
-StaticJsonDocument<2048> doc;
-StaticJsonDocument<2048> weather;
-
-// WiFi secrets
-#include "arduino_secrets.h" 
-char ssid[] = SECRET_SSID;        // your network SSID (name)
-char pass[] = SECRET_PASS;        // your network password (use for WPA, or use as key for WEP)
-int status = WL_IDLE_STATUS;      // the WiFi radio's status
-
 // timers and intervals
 int lastDataUpdate = 0;
 int dataUpdateInterval = 5*60;  // data update interval, 5 minutes;
-
 int timePerScreen = 5000; // show each screen for milliseconds given by this number
-
-// time related variables and parameters
-time_t now;                         // this is the epoch
-tm tm;                              // the structure tm holds time information in a more convient way
-
-// callback function for NTP sync
-void timeIsSet(bool from_sntp) {  
-  if (from_sntp){
-    Serial.println();
-    Serial.println("[NTP] NTP sync complete.");
-    Serial.println();
-  }
-}
-
-//Week Days
-String weekDaysFull[7]={"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-//String weekDays[7]={"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-
-//Month names
-String months[12]={"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
-
 
 String price = "NaN";
 long sats;
@@ -136,19 +139,36 @@ long sats;
 String blockheight = "0";
 int feerates[3] = {0, 0, 0};
 
+
+//------------------------------------------------------------------------------
+// Temperature 
+//------------------------------------------------------------------------------
+
+// temperature and humidity sensor (SHT21 compatible) via I2C
+#include <Wire.h>
+#include <Sodaq_SHT2x.h>
+
+// the openweathermap API string holds the geographic coordinates and the (free) API key
+float lat = 51.5;
+float lon = 0.0;
+char weatherAPIString[64];
+sprintf = "/data/2.5/weather?lat=51.5&lon=0.0&appid=MYAPIKEY";
+snprintf(weatherAPIString, sizeof(weatherAPIString), "/data/2.5/weather?lat=%.1f&lon=%.1f&appid=MYAPIKEY", lat, lon);
+
+
 float temperature;
 float humidity;
-
 float temperatureSelfHeatingCorrection = -0.4; // compensate for the heating of the sensor by the NodeMCU board and the display
+char tempUnits = 'F';
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//  END INCLUDES AND DECLARATIONS  /////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// END INCLUDES AND DECLARATIONS
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// BEGIN SETUP
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//  BEGIN SETUP  ///////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void setup() {
   // Start NTP
@@ -237,16 +257,17 @@ void setup() {
   delay(1000);
 
 }
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//  END SETUP  /////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// END SETUP
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// BEGIN LOOP
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//  BEGIN LOOP  ////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void loop() {  
+
   // show clock screen
   tftClockScreen();
 
@@ -275,25 +296,40 @@ void loop() {
   lightSleep(timePerScreen);
 }
 
-
-// END LOOP
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//  END LOOP  //////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
 
 
-// Temperature and Weather related functions and screens
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//  FUNCTIONS  /////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+/*
+  Get a reading from the local temp/humidity sensor.
+  Uses exponential moving average with alpha = 0.5 to get more stable readings
+ */
 void getTempHum() {
-  // use an exponential moving average with alpha = 0.5 to get more stable readings
   float alpha = 0.5;
   humidity = alpha * SHT2x.GetHumidity() + (1-alpha) * humidity;
   temperature = alpha * SHT2x.GetTemperature() + (1-alpha) * temperature;
+  if (tempUnit == 'F') {
+    temperature = convertCtoF(temperature);
+  }
 }
 
+/*
+  Convert C to F
+ */
+float convertCtoF(float c) {
+  float f;
+  f = (c * 1.8) + 32;
+  return f;
+}
 
 void tftTempWeatherScreen()
 {
